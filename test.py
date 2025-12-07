@@ -7,15 +7,9 @@ import easyocr
 import requests
 import json
 
-client = genai.Client(api_key="AIzaSyB7ii71GL8QRoy4bWe7XA0tNyl2BATirUE")
+client = genai.Client(api_key="")
 pytesseract.pytesseract.tesseract_cmd = r"C:/Program Files/Tesseract-OCR/tesseract.exe"
 
-
-
-# im = cv2.imread("cola.jpg")
-
-# text = pytesseract.image_to_string(im)
-# print(text)
 
 SEARXNG_URL = "http://localhost:8888/search"
 
@@ -38,15 +32,94 @@ def search_searxng(query: str):
     # Pretty print JSON
     return data
 
+reader = easyocr.Reader(['en'])  # create once, reuse
 
 
-# reader = easyocr.Reader(['en'])
+def extract_product_name_from_ocr(image_path: str) -> tuple[str, str]:
 
-# results = reader.readtext('cola.jpg')
+    
+    # results = reader.readtext(image_path) 
 
-# for detection in results:
-#     print(detection[1])
+    # ocr_text = " ".join([r[1] for r in results])
 
+    results = cv2.imread(image_path)
+    results.view()
+
+    ocr_text = pytesseract.image_to_string(results)
+    print()
+
+
+    print("This is the OCR text",ocr_text)
+
+    # Ask LLM to extract product name
+    resp = client.models.generate_content(
+    model="gemini-2.5-flash",
+    contents=f"""
+You are given noisy OCR text captured from the packaging of a **single packaged food or drink product**.
+
+You must identify the **full product name** (brand + product + variant) even if the OCR text is incomplete.
+
+OCR text:
+---
+{ocr_text}
+---
+
+Your task:
+
+1. Infer the most likely **exact product name as printed on the front of the pack**.
+   - Use direct matches from the OCR text when available.
+   - But also use **cues and associations** when the brand or variant is missing, such as:
+     - flavor names (e.g. "Magic Masala", "Masala Twist", "Cold Coffee")
+     - slogans or taglines specific to known brands
+     - abbreviations or stylized spellings
+     - references to shape/packaging (e.g. "Classic Salted" hints at Lay's Classic Salted)
+     - popular product series names (e.g. "Dairy Milk Silk", "Oreo Double Stuf", etc.)
+     - well-known brand color schemes (if mentioned by OCR, e.g. "red label", "blue classic", etc.)
+   - If OCR text is messy, combine compatible fragments to form the most likely real product name.
+
+2. If you have multiple possibilities, pick the **most widely recognized / most plausible retail product**.
+
+3. Return format:
+   - If you are reasonably confident: **return ONLY the product name** (one line, no quotes, no explanation).
+   - If NOT reasonably confident: return exactly:
+     PRODUCT_NAME_NOT_FOUND
+
+Examples of reasoning you are allowed to apply internally (do NOT output the reasoning):
+- "Magic Masala" strongly implies "Lay's Indian Magic Masala".
+- "Silk Oreo" strongly implies "Cadbury Dairy Milk Silk Oreo".
+- "Zero Sugar Cola" strongly implies "Coca-Cola Zero Sugar" if context suggests cola.
+- "Crunchy Masala Noodles" implies "Maggi Masala" or "Yippee Magic Masala" depending on other cues.
+
+IMPORTANT:
+- DO NOT return generic category words like "Potato Chips", "Cold Drink", "Noodles".
+- DO NOT return company name or factory address.
+- DO NOT add quotes, punctuation, or commentary. Just the product name.
+"""
+)
+
+
+    product_name = resp.text.strip()
+    print("This is the identified product name ", product_name)
+    return product_name, ocr_text
+
+
+def process_image(image_path: str):
+    # 1. OCR + product name extraction
+    product_name, ocr_text = extract_product_name_from_ocr(image_path)
+
+    if product_name == "PRODUCT_NAME_NOT_FOUND":
+        # Fallback: use raw OCR text as query
+        print("[INFO] Product name not confidently identified, falling back to OCR text for search.")
+        query = ocr_text + "Ingredients"
+    else:
+        print(f"[INFO] Detected product name: {product_name}")
+        query = product_name + "Ingredients"
+
+    # 2. Search SearXNG
+    data = search_searxng(query)   # must RETURN the SearXNG JSON dict
+
+    # 3. Let your existing LLM prompt merge + filter ingredients/allergens/etc.
+    call_genai(data)   # uses the big "go through all results" prompt we wrote
 
 
 def call_genai(data):
@@ -141,7 +214,5 @@ Here is the JSON from SearXNG:
 
 
 if __name__ == "__main__":
-    query = input("Enter your search keyword: ")
-    data = search_searxng(query)
-    call_genai(data)
-
+    image_path = "maggi.png"   # or input() / CLI arg
+    process_image(image_path)

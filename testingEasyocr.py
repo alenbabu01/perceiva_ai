@@ -5,7 +5,7 @@ import easyocr
 reader = easyocr.Reader(['en'])
 
 # Step 2: Run OCR on your image
-results = reader.readtext('lays.jpg')
+results = reader.readtext('cola.jpg')
 
 # Step 3: Print the recognized text
 for detection in results:
