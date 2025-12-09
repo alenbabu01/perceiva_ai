@@ -25,7 +25,7 @@ def generate():
     }
 
     try:
-        response = requests.post(OLLAMA_API_URL, json=payload, timeout=30)
+        response = requests.post(OLLAMA_API_URL, json=payload)
         response.raise_for_status()
         result = response.json()
 

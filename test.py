@@ -1,23 +1,28 @@
+from ultralytics import YOLO
 from google import genai
-from PIL import Image
-import pytesseract
-import cv2
-import easyocr
-
 import requests
 import json
 
-client = genai.Client(api_key="")
-pytesseract.pytesseract.tesseract_cmd = r"C:/Program Files/Tesseract-OCR/tesseract.exe"
+# -------------------------------
+# CONFIG
+# -------------------------------
+SEARXNG_URL = "http://localhost:8080/search"
+GENAI_API_KEY = ""  # fill this
+MODEL_PATH = "models/best.pt"
+
+client = genai.Client(api_key=GENAI_API_KEY)
+
+# Load local product-recognition model once
+product_model = YOLO(MODEL_PATH)
 
 
-SEARXNG_URL = "http://localhost:8888/search"
-
-
+# -------------------------------
+# SearXNG search helper
+# -------------------------------
 def search_searxng(query: str):
     params = {
         "q": query,
-        "format": "json"   # very important for JSON output
+        "format": "json"  # JSON output
     }
 
     try:
@@ -25,184 +30,88 @@ def search_searxng(query: str):
         response.raise_for_status()
     except requests.RequestException as e:
         print("❌ Error contacting SearXNG:", e)
-        return
+        return None
 
-    data = response.json()
-
-    # Pretty print JSON
-    return data
-
-reader = easyocr.Reader(['en'])  # create once, reuse
+    return response.json()
 
 
-def extract_product_name_from_ocr(image_path: str) -> tuple[str, str]:
+# -------------------------------
+# Local model → product name
+# -------------------------------
+def get_product_name_from_model(image_path: str) -> tuple[str, float]:
+    """
+    Use the local YOLO classification model to get the top-1 product name.
+    You said: this **is** the exact model name, so we trust it.
+    Returns: (product_name, confidence)
+    """
+    results = product_model(image_path)[0]
 
-    
-    # results = reader.readtext(image_path) 
+    top1_idx = results.probs.top1
+    product_name = results.names[top1_idx]
+    confidence = float(results.probs.top1conf)
 
-    # ocr_text = " ".join([r[1] for r in results])
-
-    results = cv2.imread(image_path)
-    results.view()
-
-    ocr_text = pytesseract.image_to_string(results)
-    print()
-
-
-    print("This is the OCR text",ocr_text)
-
-    # Ask LLM to extract product name
-    resp = client.models.generate_content(
-    model="gemini-2.5-flash",
-    contents=f"""
-You are given noisy OCR text captured from the packaging of a **single packaged food or drink product**.
-
-You must identify the **full product name** (brand + product + variant) even if the OCR text is incomplete.
-
-OCR text:
----
-{ocr_text}
----
-
-Your task:
-
-1. Infer the most likely **exact product name as printed on the front of the pack**.
-   - Use direct matches from the OCR text when available.
-   - But also use **cues and associations** when the brand or variant is missing, such as:
-     - flavor names (e.g. "Magic Masala", "Masala Twist", "Cold Coffee")
-     - slogans or taglines specific to known brands
-     - abbreviations or stylized spellings
-     - references to shape/packaging (e.g. "Classic Salted" hints at Lay's Classic Salted)
-     - popular product series names (e.g. "Dairy Milk Silk", "Oreo Double Stuf", etc.)
-     - well-known brand color schemes (if mentioned by OCR, e.g. "red label", "blue classic", etc.)
-   - If OCR text is messy, combine compatible fragments to form the most likely real product name.
-
-2. If you have multiple possibilities, pick the **most widely recognized / most plausible retail product**.
-
-3. Return format:
-   - If you are reasonably confident: **return ONLY the product name** (one line, no quotes, no explanation).
-   - If NOT reasonably confident: return exactly:
-     PRODUCT_NAME_NOT_FOUND
-
-Examples of reasoning you are allowed to apply internally (do NOT output the reasoning):
-- "Magic Masala" strongly implies "Lay's Indian Magic Masala".
-- "Silk Oreo" strongly implies "Cadbury Dairy Milk Silk Oreo".
-- "Zero Sugar Cola" strongly implies "Coca-Cola Zero Sugar" if context suggests cola.
-- "Crunchy Masala Noodles" implies "Maggi Masala" or "Yippee Magic Masala" depending on other cues.
-
-IMPORTANT:
-- DO NOT return generic category words like "Potato Chips", "Cold Drink", "Noodles".
-- DO NOT return company name or factory address.
-- DO NOT add quotes, punctuation, or commentary. Just the product name.
-"""
-)
+    print(f"[MODEL] Predicted product: {product_name} (conf={confidence:.3f})")
+    return product_name, confidence
 
 
-    product_name = resp.text.strip()
-    print("This is the identified product name ", product_name)
-    return product_name, ocr_text
-
-
-def process_image(image_path: str):
-    # 1. OCR + product name extraction
-    product_name, ocr_text = extract_product_name_from_ocr(image_path)
-
-    if product_name == "PRODUCT_NAME_NOT_FOUND":
-        # Fallback: use raw OCR text as query
-        print("[INFO] Product name not confidently identified, falling back to OCR text for search.")
-        query = ocr_text + "Ingredients"
-    else:
-        print(f"[INFO] Detected product name: {product_name}")
-        query = product_name + "Ingredients"
-
-    # 2. Search SearXNG
-    data = search_searxng(query)   # must RETURN the SearXNG JSON dict
-
-    # 3. Let your existing LLM prompt merge + filter ingredients/allergens/etc.
-    call_genai(data)   # uses the big "go through all results" prompt we wrote
-
-
-def call_genai(data):
+# -------------------------------
+# LLM: aggregate label info from SearXNG results
+# -------------------------------
+def call_genai(data, product_name: str):
+    """
+    Gemini ONLY extracts the best ingredients list
+    and allergen details (if any).
+    Product name comes entirely from the local model.
+    """
 
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=f"""
 You are given a JSON object returned by SearXNG for a query about a packaged food product.
 
-The JSON has a top-level "results" array. Each item may contain fields like:
+Product name (from a local vision model, already trusted):
+- {product_name}
+
+The JSON has a top-level "results" array. Each item may contain:
 - "title"
 - "content" (snippet / description)
 - "url"
 - other metadata
 
-The information may be:
-- incomplete,
-- partially wrong,
-- duplicated across sites,
-- or split across multiple results.
+This data may be incomplete, duplicated, partially wrong, or split across multiple sources.
 
 Your task:
 
-1. Look at **ALL** results, not just one.
-   - From every result, extract any text that looks like it contains **ingredients / allergens / label info**.
-   - Pay attention to parts starting with or containing keywords like:
-     "Ingredients:", "Contains", "Allergens", "May contain", "Suitable for", "Not suitable for", etc.
+1. Go through **ALL** results.
+2. From ALL results, extract anything that looks like:
+   - an ingredients list
+   - allergen statements ("contains", "allergens", etc.)
+3. Build the **single most promising and complete ingredients list** by:
+   - merging compatible ingredients from multiple sources,
+   - preferring detailed, label-like ingredient text,
+   - removing duplicates and obvious noise.
+4. Extract **allergen details** only if they are explicitly mentioned.
+5. Ignore:
+   - recipes,
+   - blogs,
+   - reviews,
+   unless they clearly quote the official label ingredients.
+6. Prefer official brand/manufacturer/retailer-style label text when possible.
 
-2. From ALL the candidate snippets collected across the results, infer the **most correct and complete ingredients list**:
-   - Prefer ingredients that:
-     - appear consistently across multiple sources,
-     - come from more "official" looking pages (brand / manufacturer / FSSAI / retailer product page),
-     - look like detailed label text rather than short, vague descriptions.
-   - If two sources conflict:
-     - Prefer the one that is more detailed and complete.
-     - Prefer more recent-looking or more official-sounding label text.
-   - It is allowed to merge pieces from multiple sites if they clearly refer to the same product and are compatible.
-   - Remove obvious duplicates, re-order if needed to make a clean list.
+OUTPUT RULES (VERY IMPORTANT):
 
-3. In addition to ingredients, also aggregate as MUCH label information as possible from all results:
-   - allergens: explicit allergen statements (e.g. "contains milk, soy, wheat")
-   - may_contain: "may contain" / "processed in facility" style warnings
-   - suitability: dietary suitability (e.g. vegetarian / vegan / egg / non-veg / gluten-free)
-   - warnings: any safety / health warnings (e.g. "not suitable for children", "contains phenylalanine")
-   - additives_info: info about additives / E-numbers / preservatives / colours / flavours
-   - other_label_info: any other important label text (e.g. "no added sugar", "contains artificial sweeteners")
-   - source_url: one or more URLs (comma-separated) of the most important sources you relied on
+- Return ONLY two lines in plain text:
+  Ingredients: <final merged ingredients list or empty>
+  Allergens: <final merged allergen info or empty>
 
-4. Be robust to noise:
-   - Ignore recipes, blogs and reviews **unless** they clearly quote the official ingredients / label text.
-   - Clean spacing, remove obvious marketing fluff, but KEEP all useful safety & allergen information.
-   - If a snippet obviously describes a different product, ignore it.
+- If no allergen info is found, still return the line:
+  Allergens:
 
-5. Output format (VERY IMPORTANT):
-   - Return a SINGLE JSON object with these keys:
-     {{
-       "ingredients": "<string or empty if unknown>",
-       "allergens": "<string or empty if unknown>",
-       "may_contain": "<string or empty if unknown>",
-       "suitability": "<string or empty if unknown>",
-       "warnings": "<string or empty if unknown>",
-       "additives_info": "<string or empty if unknown>",
-       "other_label_info": "<string or empty if unknown>",
-       "source_url": "<string or empty if unknown>"
-     }}
-   - Each value must be a plain string (no lists, no nested JSON).
-   - If you list multiple URLs in source_url, separate them by commas in a single string.
-   - Do NOT wrap this object in markdown, do NOT add any explanation or extra text. Output ONLY the JSON.
+- Do NOT return JSON.
+- Do NOT add explanations.
+- Do NOT add bullet points.
+- Do NOT add any extra text.
 
-If you are not reasonably sure you found any valid product label information, return exactly this JSON:
-{{
-  "ingredients": "",
-  "allergens": "",
-  "may_contain": "",
-  "suitability": "",
-  "warnings": "",
-  "additives_info": "",
-  "other_label_info": "",
-  "source_url": "",
-  "error": "PRODUCT_INFO_NOT_FOUND"
-}}
-
-Here is the JSON from SearXNG:
 ---
 {json.dumps(data, ensure_ascii=False)}
 ---
@@ -213,6 +122,29 @@ Here is the JSON from SearXNG:
 
 
 
+# -------------------------------
+# Main pipeline
+# -------------------------------
+def process_image(image_path: str):
+    # 1. Get exact product name from local model
+    product_name, conf = get_product_name_from_model(image_path)
+
+    # 2. Build query for SearXNG using that name
+    query = f"{product_name} Ingredients"
+    print("[INFO] Querying SearXNG with:", query)
+
+    data = search_searxng(query)
+    if data is None:
+        print("[ERROR] No data from SearXNG.")
+        return
+
+    # 3. Let Gemini clean/merge the ingredients + label info
+    call_genai(data, product_name)
+
+
+# -------------------------------
+# Entry point
+# -------------------------------
 if __name__ == "__main__":
-    image_path = "maggi.png"   # or input() / CLI arg
+    image_path = "assets/pintola.png"  # or any test image path
     process_image(image_path)
