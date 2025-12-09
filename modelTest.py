@@ -1,20 +1,18 @@
-import os
 from ultralytics import YOLO
+import cv2
+import os
 
-# Load the trained YOLO classification model
-model = YOLO('models/yolo-cls.pt')
 
-# Create output directory if it doesn't exist
-output_dir = "runs/custom_predict"
-os.makedirs(output_dir, exist_ok=True)
 
-# Run prediction
-results = model.predict('assets/maggi.png', conf=0.5)
+# model = YOLO("models/best.pt")
 
-# Save annotated prediction image(s)
-for i, result in enumerate(results):
-    output_path = os.path.join(output_dir, f"cola_pred_{i}.jpg")
-    result.save(filename=output_path)
-    print("Saved annotated image to:", output_path)
+# results = model("assets/pintola.png")
 
-print(results)
+# print(results[0].names[results[0].probs.top1])
+# print(results[0].probs.top1conf)
+
+
+model_onnx = YOLO("models/best.pt")
+results_onnx = model_onnx("assets/pintola.png")
+print(results_onnx[0].names[results_onnx[0].probs.top1])
+print(results_onnx[0].probs.top1conf)

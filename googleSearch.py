@@ -28,8 +28,8 @@ def google_search(query, api_key, cx):
 
 # Example usage:
 if __name__ == "__main__":
-    API_KEY = "AIzaSyAKbJpw8nO5O0oMqT4QJbfdUylQNIbAA20"  # replace with your API key
-    CX = "e31c34ee0503b4c6e"  # replace with your search engine ID
+    API_KEY = "heh"  # replace with your API key
+    CX = "heh"  # replace with your search engine ID
     query = "Python programming tutorials"
     
     results = google_search(query, API_KEY, CX)
