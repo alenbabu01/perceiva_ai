@@ -1,38 +1,56 @@
 from flask import Flask, request, jsonify
 import requests
+import json
 
 app = Flask(__name__)
 
-# Ollama server URL (default port 11434)
 OLLAMA_API_URL = "http://localhost:11434/api/generate"
+MODEL_NAME = "gemma3:12b"
 
-# Use the exact model name from `ollama list`: "qwen3:8b"
-MODEL_NAME = "qwen3:8b"
+SYSTEM_INSTRUCTION = (
+    "You are a strict text-processing function. Your only job is to scan the provided JSON "
+    "and return two lines exactly: 'Ingredients: ...' and 'Allergens: ...'. Do not add anything else."
+)
 
 @app.route("/generate", methods=["POST"])
 def generate():
-    data = request.json
-    query = data.get("query", "")
-
-    if not query:
+    data = request.json or {}
+    user_query = data.get("query", "")
+    if not user_query:
         return jsonify({"error": "Missing 'query' parameter"}), 400
 
-    # Prepare request to Ollama
+    prompt = (
+        f"SYSTEM:\n{SYSTEM_INSTRUCTION}\n\n"
+        f"USER:\n{user_query}\n\n"
+        f"---\n"
+        "Return EXACTLY two lines:\n"
+        "Ingredients: <text or empty>\n"
+        "Allergens: <text or empty>\n"
+    )
+
     payload = {
         "model": MODEL_NAME,
-        "prompt": query,
-        "stream": False  # Set to True for real-time streaming
+        "prompt": prompt,
+        "stream": False,
+        "temperature": 0.0
     }
 
     try:
-        response = requests.post(OLLAMA_API_URL, json=payload)
-        response.raise_for_status()
-        result = response.json()
+        # shorter timeout to reduce wait time
+        resp = requests.post(OLLAMA_API_URL, json=payload, timeout=30)
+        resp.raise_for_status()
+        result = resp.json()
 
-        # Extract the generated response (assuming it's a single string)
-        generated_text = result.get("response", "")
+        # Return model's text directly (common field names)
+        model_text = result.get("response")
+        if model_text is None:
+            # fallback to other possible field shapes
+            if isinstance(result.get("outputs"), list) and result["outputs"]:
+                model_text = result["outputs"][0].get("text")
+            else:
+                model_text = ""
 
-        return jsonify({"response": generated_text})
+        return jsonify({"response": model_text})
 
     except requests.exceptions.RequestException as e:
         return jsonify({"error": str(e)}), 500
