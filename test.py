@@ -1,39 +1,42 @@
 from ultralytics import YOLO
 import requests
 import json
+from serpapi import GoogleSearch
+
 
 # -------------------------------
 # CONFIG
 # -------------------------------
-SEARXNG_URL = "http://localhost:8080/search"
+SERPAPI_KEY = ""
 LOCAL_LLM_URL = "http://127.0.0.1:5000/generate"
 MODEL_PATH = "models/best.pt"
 
-# Load local product-recognition model once
+# Load YOLO model
 product_model = YOLO(MODEL_PATH)
 
 
 # -------------------------------
-# SearXNG search helper
+# SerpApi search
 # -------------------------------
-def search_searxng(query: str):
+def search_serpapi(query: str):
     params = {
+        "engine": "google_ai_mode",
         "q": query,
-        "format": "json"
+        "api_key": SERPAPI_KEY
     }
 
     try:
-        response = requests.get(SEARXNG_URL, params=params, timeout=10)
-        response.raise_for_status()
-    except requests.RequestException as e:
-        print("❌ Error contacting SearXNG:", e)
+        search = GoogleSearch(params)
+        results = search.get_dict()
+        print("Results from the ai :",results["text_blocks"])
+        return results["text_blocks"]
+    except Exception as e:
+        print("❌ Error contacting SerpApi:", e)
         return None
-
-    return response.json()
 
 
 # -------------------------------
-# Local model → product name
+# Get product name from model
 # -------------------------------
 def get_product_name_from_model(image_path: str) -> tuple[str, float]:
     results = product_model(image_path)[0]
@@ -47,7 +50,7 @@ def get_product_name_from_model(image_path: str) -> tuple[str, float]:
 
 
 # -------------------------------
-# Local LLM helper (MATCHES YOUR FLASK SERVER)
+# Local LLM helper
 # -------------------------------
 def generate_with_local_llm(prompt: str) -> str:
     try:
@@ -57,63 +60,30 @@ def generate_with_local_llm(prompt: str) -> str:
             timeout=120
         )
         resp.raise_for_status()
-        data = resp.json()
-
-        return data.get("response", "").strip()
-
+        return resp.json().get("response", "").strip()
     except requests.RequestException as e:
         print("❌ Error contacting local LLM:", e)
         return ""
 
 
 # -------------------------------
-# LLM: extract ingredients + allergens ONLY
+# Ingredient extraction prompt
 # -------------------------------
-
-
 def call_local_llm(data, product_name: str):
     prompt = f"""
 You are a text-processing function, NOT a chat assistant.
 
-Your ONLY job:
-- Read the JSON data.
-- Extract the best possible INGREDIENTS LIST and ALLERGEN INFO for this product:
-  {product_name}
+Your job:
+- Extract ingredients + allergen info for {product_name}
+- Output exactly:
 
-IMPORTANT BEHAVIOUR:
-
-1. Look through ALL results in the JSON.
-2. From anywhere in the JSON, collect text that looks like:
-   - ingredients list
-   - allergen statements ("contains", "allergens", "may contain", etc.)
-3. Merge and clean this into:
-   - One single ingredients line.
-   - One single allergens line.
-4. You may merge ingredients from multiple sources.
-5. Ignore recipes/blogs unless they clearly quote the product label.
-
-NOW THE MOST IMPORTANT PART:
-
-You MUST respond in EXACTLY this format, with EXACTLY two lines:
-
-Ingredients: <final merged ingredients list or empty>
-Allergens: <final merged allergen info or empty>
-
-Rules:
-- No extra spaces before "Ingredients:" or "Allergens:".
-- If there are no allergens, still output: Allergens:
-- Do NOT output anything else. No explanations, no markdown, no headings, no lists.
-- Your entire reply must match this pattern:
-  Ingredients: ...
-  Allergens: ...
-
-Here is the JSON data (do NOT repeat or summarize it, just use it silently):
+Ingredients: ...
+Allergens: ...
 
 <DATA>
 {json.dumps(data, ensure_ascii=False)}
 </DATA>
 """
-
     output = generate_with_local_llm(prompt)
     print("\n✅ FINAL OUTPUT FROM LOCAL LLM:\n")
     print(output)
@@ -123,24 +93,24 @@ Here is the JSON data (do NOT repeat or summarize it, just use it silently):
 # Main pipeline
 # -------------------------------
 def process_image(image_path: str):
-    # 1. Get exact product name from local model
+    # 1. Recognize product
     product_name, conf = get_product_name_from_model(image_path)
 
-    # 2. Build query for SearXNG
-    query = f"{product_name} Ingredients"
-    print("[INFO] Querying SearXNG with:", query)
+    # 2. Query SerpApi instead of SearXNG
+    query = f"{product_name} ingredients and contain any allergens?"
+    print("[INFO] Querying SerpApi with:", query)
 
-    data = search_searxng(query)
+    data = search_serpapi(query)
     if data is None:
-        print("[ERROR] No data from SearXNG.")
+        print("[ERROR] No data from SerpApi.")
         return
 
-    # 3. Use LOCAL LLM (not Gemini)
+    # 3. Extract ingredients using local LLM
     call_local_llm(data, product_name)
 
 
 # -------------------------------
-# Entry point
+# Run
 # -------------------------------
 if __name__ == "__main__":
     image_path = "assets/image.png"
