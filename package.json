@@ -1,0 +1,24 @@
+{
+  "name": "perceiva_ai",
+  "version": "1.0.0",
+  "main": "nodeGemini.js",
+  "type": "module",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/alenbabu01/perceiva_ai.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/alenbabu01/perceiva_ai/issues"
+  },
+  "homepage": "https://github.com/alenbabu01/perceiva_ai#readme",
+  "description": "",
+  "dependencies": {
+    "@google/genai": "^1.34.0"
+  }
+}
