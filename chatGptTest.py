@@ -2,7 +2,7 @@ from openai import OpenAI
 import base64
 import sys
 
-client = OpenAI(api_key="API_KEY")
+client = OpenAI(api_key="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")
 
 # Specify your local image path here
 image_path = "testimage.png"  # Change this to your image path
@@ -15,7 +15,7 @@ with open(image_path, "rb") as image_file:
 media_type = "image/png" if image_path.endswith(".png") else "image/jpeg"
 
 response = client.responses.create(
-    model="gpt-5-mini",
+    model="gpt-4.1-mini",
     input=[{
         "role": "user",
         "content": [
