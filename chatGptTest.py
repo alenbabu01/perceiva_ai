@@ -2,7 +2,7 @@ from openai import OpenAI
 import base64
 import sys
 
-client = OpenAI(api_key="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")
+client = OpenAI(api_key="")
 
 # Specify your local image path here
 image_path = "testimage.png"  # Change this to your image path
