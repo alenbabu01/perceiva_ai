@@ -1,36 +1,66 @@
+from fastapi import FastAPI, UploadFile, File
 from ultralytics import YOLO
-from PIL import Image
 import cv2
+import numpy as np
+import os
+from pathlib import Path
+import uuid
 
-# Load the YOLOv8 model
-model = YOLO(r"models\detectionModel\best (1).pt")
+app = FastAPI()
 
-# Run inference on the test image
-test_image_path = "assets\shelf2.jpeg"  # Replace with your test image path
-results = model.predict(source=test_image_path, conf=0.25)
+MODEL_PATH = r"models\detectionModel\best.pt"
+CROP_DIR = Path("assets/croppedImages")
+UPLOAD_DIR = Path("assets/uploads")
+CROP_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-# Load the image
-image = cv2.imread(test_image_path)
+PADDING_RATIO = 0.15
 
-# Annotate detections on the image
-for result in results:
-    boxes = result.boxes
-    for box in boxes:
-        # Get coordinates
-        x1, y1, x2, y2 = map(int, box.xyxy[0])
-        confidence = box.conf[0]
-        class_id = int(box.cls[0])
-        class_name = result.names[class_id]
-        
-        # Draw bounding box
-        cv2.rectangle(image, (x1, y1), (x2, y2), (0, 255, 0), 2)
-        
-        # Put label with class name and confidence
-        label = f"{class_name} {confidence:.2f}"
-        cv2.putText(image, label, (x1, y1 - 10), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+model = YOLO(MODEL_PATH)
 
-# Save the annotated image
-output_path = "detected_objects.jpg"
-cv2.imwrite(output_path, image)
-print(f"Annotated image saved to {output_path}")
+@app.post("/detect-crop")
+async def detect_crop(file: UploadFile = File(...)):
+    # Save upload
+    suffix = Path(file.filename).suffix or ".jpg"
+    upload_path = UPLOAD_DIR / f"{uuid.uuid4().hex}{suffix}"
+    data = await file.read()
+    upload_path.write_bytes(data)
+
+    # Read image
+    image = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+    if image is None:
+        return {"ok": False, "error": "Invalid image"}
+
+    # Run inference
+    results = model.predict(source=image, conf=0.25)
+
+    crop_count = 0
+    for result in results:
+        boxes = result.boxes
+        for box in boxes:
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            confidence = float(box.conf[0])
+            class_id = int(box.cls[0])
+            class_name = result.names[class_id]
+
+            img_h, img_w = image.shape[:2]
+            box_w = max(0, x2 - x1)
+            box_h = max(0, y2 - y1)
+            pad_x = int(box_w * PADDING_RATIO)
+            pad_y = int(box_h * PADDING_RATIO)
+
+            x1p = max(0, x1 - pad_x)
+            y1p = max(0, y1 - pad_y)
+            x2p = min(img_w, x2 + pad_x)
+            y2p = min(img_h, y2 + pad_y)
+
+            if x2p <= x1p or y2p <= y1p:
+                continue
+
+            cropped = image[y1p:y2p, x1p:x2p]
+            crop_filename = f"{class_name}_{crop_count}_{confidence:.2f}.jpg"
+            crop_path = CROP_DIR / crop_filename
+            cv2.imwrite(str(crop_path), cropped)
+            crop_count += 1
+
+    return {"ok": True, "crops": crop_count, "saved_to": str(CROP_DIR)}
